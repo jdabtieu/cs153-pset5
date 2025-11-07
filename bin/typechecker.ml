@@ -326,9 +326,103 @@ and typecheck_lhs (c : Tctxt.t) (l : Ast.lhs node) : Ast.ty * bool =
    - You will probably find it convenient to add a helper function that implements the 
      block typecheck rules.
 *)
-let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.t * bool =
-  failwith "todo: implement typecheck_stmt"
 
+let typecheck_vdecl (tc : Tctxt.t) (v : Ast.vdecl) (l : 'a Ast.node) : Tctxt.t =
+  if Tctxt.lookup_local_option (fst v) tc <> None then
+    type_error l ("Variable " ^ (fst v) ^ " redefined")
+  else
+    let ty = typecheck_exp tc (snd v) in
+    Tctxt.add_local tc (fst v) ty
+
+let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.t * bool =
+  match s.elt with
+  | Assn (lhs, exp) ->
+    let lhs_ty, is_assignable = typecheck_lhs tc lhs in
+    if not is_assignable then
+      type_error s "Cannot assign to non-assignable lhs";
+    let exp_ty = typecheck_exp tc exp in
+    if subtype tc exp_ty lhs_ty then
+      (tc, false)
+    else
+      type_error s "Assignment type mismatch"
+  | Decl vdecl -> (typecheck_vdecl tc vdecl s, false)
+  | SCall (fn_exp, arg_exps) -> 
+    let fn_type = typecheck_exp tc fn_exp in (
+    match fn_type with
+    | TRef (RFun (param_tys, ret_ty)) -> 
+      if List.length param_tys <> List.length arg_exps then
+        type_error s "Incorrect number of function arguments";
+      if ret_ty <> RetVoid then
+        type_error s "Return value of function call ignored";
+      let _ = List.for_all2 (fun param_ty arg_exp ->
+        let arg_ty = typecheck_exp tc arg_exp in
+        if subtype tc arg_ty param_ty then
+          true
+        else
+          type_error s "Function argument type mismatch"
+      ) param_tys arg_exps in
+      (tc, false)
+    | _ -> type_error s "Attempting to call a non-function type"
+    )
+  | If (pred, true_br, false_br) ->
+    let pred_ty = typecheck_exp tc pred in
+    if pred_ty <> TBool then
+      type_error s "If predicate must be boolean";
+    let _, true_returns = typecheck_block tc true_br to_ret in
+    let _, false_returns = typecheck_block tc false_br to_ret in
+    (tc, true_returns && false_returns)
+  | Cast (ref_ty, id, exp, true_br, false_br) ->
+    if Tctxt.lookup_local_option id tc <> None then
+      type_error s ("Variable " ^ id ^ " redefined");
+    let exp_ty = typecheck_exp tc exp in
+    let cast_ty = TRef ref_ty in
+    if not (subtype tc exp_ty cast_ty) then
+      type_error s "Invalid cast"; (* TODO this might not be correct *)
+    let new_ctxt = Tctxt.add_local tc id cast_ty in
+    let _, true_returns = typecheck_block new_ctxt true_br to_ret in
+    let _, false_returns = typecheck_block tc false_br to_ret in
+    (tc, true_returns && false_returns)
+  | While (pred, body) ->
+    let pred_ty = typecheck_exp tc pred in
+    if pred_ty <> TBool then
+      type_error s "While predicate must be boolean";
+    let _ = typecheck_block tc body to_ret in
+    (tc, false)
+  | For (vdecls, pred_opt, stmt_opt, body) ->
+    let new_ctxt = List.fold_left (fun ctxt vdecl -> typecheck_vdecl ctxt vdecl s) tc vdecls in
+    (match pred_opt with
+    | Some pred ->
+      let pred_ty = typecheck_exp new_ctxt pred in
+      if pred_ty <> TBool then
+        type_error s "For loop predicate must be boolean"
+    | None -> ());
+    (match stmt_opt with
+    | Some stmt -> let _, will_return = typecheck_stmt new_ctxt stmt to_ret in
+      if will_return then
+        type_error s "For loop update statement cannot definitely return"
+    | None -> ());
+    let _ = typecheck_block new_ctxt body to_ret in
+    (tc, false)
+  | Ret exp_opt ->
+    (match (exp_opt, to_ret) with
+    | (None, RetVoid) -> (tc, true)
+    | (Some exp, RetVal ret_ty) ->
+      let exp_ty = typecheck_exp tc exp in
+      if subtype tc exp_ty ret_ty then
+        (tc, true)
+      else
+        type_error s "Return type mismatch"
+    | _ -> type_error s "Return statement type mismatch")
+
+and typecheck_block (tc : Tctxt.t) (b : Ast.block) (to_ret : ret_ty) : Tctxt.t * bool =
+  let _, _, last_will_return = List.fold_left (fun (ctxt, nreturns, will_return) stmt ->
+    let new_ctxt, stmt_returns = typecheck_stmt ctxt stmt to_ret in
+    let nreturns = if stmt_returns then nreturns + 1 else nreturns in
+    if nreturns > 1 then
+      type_error stmt "Unreachable code after return";
+    (new_ctxt, nreturns, stmt_returns)
+  ) (tc, 0, false) b in
+  (tc, last_will_return)
 
 (* struct type declarations ------------------------------------------------- *)
 (* Here is an example of how to implement the TYP_TDECLOK rule, which is 
@@ -351,11 +445,17 @@ let typecheck_tdecl (tc : Tctxt.t) (id : id) (fs : field list)  (l : 'a Ast.node
     - ensures formal parameters are distinct
     - extends the local context with the types of the formal parameters to the 
       function
-    - typechecks the body of the function (passing in the expected return type
+    - typechecks the body of the function (passing in the expected return type)
     - checks that the function actually returns
 *)
 let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
-  failwith "todo: typecheck_fdecl"
+  if List.length (List.sort_uniq String.compare (List.map snd f.args)) < List.length f.args
+  then type_error l ("Repeated formal parameters in function " ^ f.fname);
+  let local_ctxt = List.fold_left (fun ctxt (ty, id) -> Tctxt.add_local ctxt id ty) tc f.args in
+  let _, will_return = typecheck_block local_ctxt f.body f.frtyp in
+  if not will_return then
+    type_error l ("Control reaches end of function " ^ f.fname ^ " without return")
+  else ()
 
 (* creating the typchecking context ----------------------------------------- *)
 
