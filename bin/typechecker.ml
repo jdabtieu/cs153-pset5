@@ -374,11 +374,13 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
   | Cast (ref_ty, id, exp, true_br, false_br) ->
     if Tctxt.lookup_local_option id tc <> None then
       type_error s ("Variable " ^ id ^ " redefined");
-    let exp_ty = typecheck_exp tc exp in
-    let cast_ty = TRef ref_ty in
-    if not (subtype tc exp_ty cast_ty) then
-      type_error s "Invalid cast"; (* TODO this might not be correct *)
-    let new_ctxt = Tctxt.add_local tc id cast_ty in
+    let exp_ty = match typecheck_exp tc exp with
+    | TRef rty -> rty
+    | TNullRef rty -> rty
+    | _ -> type_error s "Cast expression must be a reference type" in
+    if not (subtype_ref tc exp_ty ref_ty) then
+      type_error s "Invalid cast";
+    let new_ctxt = Tctxt.add_local tc id (TRef ref_ty) in
     let _, true_returns = typecheck_block new_ctxt true_br to_ret in
     let _, false_returns = typecheck_block tc false_br to_ret in
     (tc, true_returns && false_returns)
@@ -485,42 +487,48 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
    constants, but can mention only other global values that were declared earlier
 *)
 
-let rec create_struct_ctxt (p:Ast.prog) : Tctxt.t =
+let rec create_struct_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
   match p with
-  | [] -> Tctxt.empty
+  | [] -> tc
   | Gtdecl ({elt=(id, fs)} as l) :: rest ->
-    let tc_rest = create_struct_ctxt rest in
-    typecheck_tdecl tc_rest id fs l;
-    Tctxt.add_struct tc_rest id fs
-  | _ :: rest -> create_struct_ctxt rest
+    if Tctxt.lookup_struct_option id tc <> None then
+      type_error l ("Redefinition of struct " ^ id);
+    create_struct_ctxt (Tctxt.add_struct tc id fs) rest
+  | _ :: rest -> create_struct_ctxt tc rest
 
 let rec create_function_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
   match p with
   | [] -> tc
   | Gfdecl ({elt=f} as l) :: rest ->
-    let tc_rest = create_function_ctxt tc rest in
-    (match Tctxt.lookup_global_option f.fname tc_rest with
-    | Some _ -> type_error l ("Redefinition of function " ^ f.fname)
-    | None -> ());
-    Tctxt.add_global tc_rest f.fname (TRef (RFun (List.map fst f.args, f.frtyp)))
+    if Tctxt.lookup_global_option f.fname tc <> None then
+      type_error l ("Redefinition of function " ^ f.fname);
+    let fn_ctxt = Tctxt.add_global tc f.fname (TRef (RFun (List.map fst f.args, f.frtyp))) in
+    create_function_ctxt fn_ctxt rest
   | _ :: rest -> create_function_ctxt tc rest
 
 let rec create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
   match p with
   | [] -> tc
   | Gvdecl ({elt=g} as l) :: rest ->
-    let tc_rest = create_global_ctxt tc rest in
-    let g_ty = typecheck_exp tc_rest g.init in
-    typecheck_ty l tc_rest g_ty;
-    Tctxt.add_global tc_rest g.name g_ty
+    if Tctxt.lookup_global_option g.name tc <> None then
+      type_error l ("Redefinition of global variable " ^ g.name);
+    let g_ty = typecheck_exp tc g.init in
+    typecheck_ty l tc g_ty;
+    create_global_ctxt (Tctxt.add_global tc g.name g_ty) rest
   | _ :: rest -> create_global_ctxt tc rest
+
+let create_builtin_funcs_ctxt (tc:Tctxt.t) : Tctxt.t =
+  List.fold_left (fun ctxt (name, (arg_tys, ret_ty)) ->
+    Tctxt.add_global ctxt name (TRef (RFun (arg_tys, ret_ty)))
+  ) tc builtins
 
 (* This function implements the |- prog and the H ; G |- prog 
    rules of the oat.pdf specification.   
 *)
 let typecheck_program (p:Ast.prog) : unit =
-  let sc = create_struct_ctxt p in
-  let fc = create_function_ctxt sc p in
+  let sc = create_struct_ctxt Tctxt.empty p in
+  let bfc = create_builtin_funcs_ctxt sc in
+  let fc = create_function_ctxt bfc p in
   let tc = create_global_ctxt fc p in
   List.iter (fun p ->
     match p with
