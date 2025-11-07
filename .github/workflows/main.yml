@@ -1,0 +1,45 @@
+name: Tests
+on:
+  - push
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tree
+        uses: actions/checkout@v5
+      - name: Set-up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: 4.14.1
+          opam-pin: false
+      - name: Build OCaml
+        run: |
+          sudo apt update
+          opam install dune num menhir
+          opam exec -- dune build
+          cp bin/main.exe oatc
+      - name: Run test
+        run: ./oatc --test
+      - name: Report number of checks passed
+        run: |
+          res=$(./oatc --test 2>/dev/null | grep 'Passed:')
+          echo "$res" | grep -P 'Passed: (\d+)/\1' >/dev/null && state="success" || state="failure"
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }} \
+            -d @- <<JSON
+          {
+            "state": "$state",
+            "context": "tests",
+            "description": "$res",
+            "target_url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
+          JSON
+        shell: bash
+      
