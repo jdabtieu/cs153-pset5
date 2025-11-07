@@ -110,9 +110,9 @@ and typecheck_ty_ref (l : 'a Ast.node) (tc : Tctxt.t) (t : Ast.rty) : unit =
     | None -> type_error l ("Undefined struct " ^ id)
   )
   | RFun (arg_tys, ret_ty) ->
-      let _ = List.for_all (fun ty -> typecheck_ty l tc ty; true) arg_tys in
-      let _ = typecheck_ty_rt l tc ret_ty in
-      ()
+    let _ = List.for_all (fun ty -> typecheck_ty l tc ty; true) arg_tys in
+    let _ = typecheck_ty_rt l tc ret_ty in
+    ()
 
 and typecheck_ty_rt (l : 'a Ast.node) (tc : Tctxt.t) (t : Ast.ret_ty) : unit =
   match t with
@@ -150,8 +150,103 @@ let is_nullable_ty (t : Ast.ty) : bool =
    a=1} is well typed.  (You should sort the fields to compare them.)
 
 *)
+(* TODO what's the diff between H |- vs H;G;L |- *)
 let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
-  failwith "todo: implement typecheck_exp"
+  match e.elt with
+  | Bop (op, e1, e2) ->
+    let t1 = typecheck_exp c e1 in
+    let t2 = typecheck_exp c e2 in (
+    match op with
+    | Eq | Neq ->
+      if subtype c t1 t2 && subtype c t2 t1 then TBool
+      else type_error e "Invalid equality operands"
+    | _ ->
+      let expect1, expect2, tr = typ_of_binop op in 
+      if t1 = expect1 && t2 = expect2 then tr
+      else type_error e "Invalid binop operands"
+    )
+  | Uop (op, e) ->
+    let t = typecheck_exp c e in
+    let expect, tr = typ_of_unop op in
+    if t = expect then tr
+    else type_error e "Invalid uop operand"
+  | CNull rty -> typecheck_ty e c (TRef rty); TNullRef rty
+  | CBool _ -> TBool
+  | CInt _ -> TInt
+  | CStr _ -> TRef RString
+  | Lhs l -> let t, _ = typecheck_lhs c l in t
+  | CArr (ty, exps) ->
+    typecheck_ty e c ty;
+    if List.for_all (fun exp -> subtype c (typecheck_exp c exp) ty) exps
+    then TRef (RArray ty)
+    else type_error e "Invalid array element type"
+  | NewArr (ty, len_exp) ->
+    typecheck_ty e c ty;
+    (match typecheck_exp c len_exp with
+    | TInt -> ()
+    | _ -> type_error e "Array length must be an integer expression"
+    );
+    (match ty with
+    | TInt | TBool | TNullRef _ -> TRef (RArray ty)
+    | TRef _ -> type_error e "Default-initialized array cannot be of nonnull reference type"
+    )
+  | NewArrInit (ty, len_exp, id, init_exp) ->
+    typecheck_ty e c ty;
+    (match typecheck_exp c len_exp with
+    | TInt -> ()
+    | _ -> type_error e "Array length must be an integer expression"
+    );
+    (match lookup_local_option id c with
+    | Some _ -> type_error e ("Array initializer variable " ^ id ^ " already defined")
+    | None -> ()
+    );
+    let new_ctxt = Tctxt.add_local c id TInt in
+    if subtype c (typecheck_exp new_ctxt init_exp) ty
+    then TRef (RArray ty)
+    else type_error e "Invalid array initializer type"
+  | Length arr_exp -> (
+    match typecheck_exp c arr_exp with
+    | TRef (RArray _) -> TInt
+    | _ -> type_error e "Length expression must be an array"
+    )
+  | CStruct (st_name, fields) -> (
+    match Tctxt.lookup_struct_option st_name c with
+    | None -> type_error e ("Undefined struct " ^ st_name)
+    | Some st_fields ->
+      let sorted_decl_fields = List.sort (fun f1 f2 -> String.compare f1.fieldName f2.fieldName) st_fields in
+      let sorted_exp_fields = List.sort (fun (n1, _) (n2, _) -> String.compare n1 n2) fields in
+      if List.length sorted_decl_fields <> List.length sorted_exp_fields then
+        type_error e ("Incorrect number of fields in struct " ^ st_name);
+      let _ = List.for_all2 (fun decl_field (exp_name, exp_value) ->
+        if decl_field.fieldName <> exp_name then
+          type_error e ("Undefined field name " ^ exp_name ^ " in struct " ^ st_name)
+        else
+          let exp_ty = typecheck_exp c exp_value in
+          if subtype c exp_ty decl_field.ftyp then
+            true
+          else
+            type_error e ("Incorrect type for field " ^ exp_name ^ " in struct " ^ st_name)
+      ) sorted_decl_fields sorted_exp_fields in
+      TRef (RStruct st_name)
+    )
+  | Call (fn_exp, arg_exps) -> (
+    match typecheck_exp c fn_exp with
+    | TRef (RFun (param_tys, ret_ty)) -> 
+      if List.length param_tys <> List.length arg_exps then
+        type_error e "Incorrect number of function arguments";
+      let _ = List.for_all2 (fun param_ty arg_exp ->
+        let arg_ty = typecheck_exp c arg_exp in
+        if subtype c arg_ty param_ty then
+          true
+        else
+          type_error e "Function argument type mismatch"
+      ) param_tys arg_exps in (
+      match ret_ty with 
+      | RetVoid -> type_error e "Attempting to use void return value"
+      | RetVal ty -> ty
+      )
+    | _ -> type_error e "Attempting to call a non-function type"
+    )
 
 (* Typechecks a lhs expression in the typing context c.  Returns the
    type of result, along with a boolean flag indicating whether
@@ -164,7 +259,35 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
      pointer (which cannot be written to).
  *)
 and typecheck_lhs (c : Tctxt.t) (l : Ast.lhs node) : Ast.ty * bool =
-  failwith "todo: implement typecheck_lhs"
+  match l.elt with
+  | Id id -> (
+    match Tctxt.lookup_local_option id c with
+    | Some ty -> (ty, true)
+    | None -> (
+      match Tctxt.lookup_global_option id c with
+      | None -> type_error l ("Undefined identifier " ^ id)
+      | Some (TRef (RFun (arg_tys, ret_ty))) -> (TRef (RFun (arg_tys, ret_ty)), false)
+      | Some ty -> (ty, true)
+    )
+  )
+  | Index (arr_id, exp) -> (
+    match typecheck_exp c arr_id with
+    | TRef (RArray elem_ty) -> (
+      match typecheck_exp c exp with
+      | TInt -> (elem_ty, true)
+      | _ -> type_error l "Array index must be an integer"
+    )
+    | _ -> type_error l "Indexing a non-array type"
+  )
+  | Proj (struct_id, field) -> (
+    match typecheck_exp c struct_id with
+    | TRef (RStruct st_name) -> (
+      match Tctxt.lookup_field_option st_name field c with
+      | Some f_ty -> (f_ty, true)
+      | None -> type_error l ("Undefined field " ^ field ^ " in struct " ^ st_name)
+    )
+    | _ -> type_error l "Projecting a non-struct type"
+  )
 
 (* statements --------------------------------------------------------------- *)
 
@@ -263,14 +386,34 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
 *)
 
 let rec create_struct_ctxt (p:Ast.prog) : Tctxt.t =
-  failwith "todo: create_struct_ctxt"
+  match p with
+  | [] -> Tctxt.empty
+  | Gtdecl ({elt=(id, fs)} as l) :: rest ->
+    let tc_rest = create_struct_ctxt rest in
+    typecheck_tdecl tc_rest id fs l;
+    Tctxt.add_struct tc_rest id fs
+  | _ :: rest -> create_struct_ctxt rest
 
 let rec create_function_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
-  failwith "todo: create_function_ctxt"
+  match p with
+  | [] -> tc
+  | Gfdecl ({elt=f} as l) :: rest ->
+    let tc_rest = create_function_ctxt tc rest in
+    (match Tctxt.lookup_global_option f.fname tc_rest with
+    | Some _ -> type_error l ("Redefinition of function " ^ f.fname)
+    | None -> ());
+    Tctxt.add_global tc_rest f.fname (TRef (RFun (List.map fst f.args, f.frtyp)))
+  | _ :: rest -> create_function_ctxt tc rest
 
 let rec create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
-  failwith "todo: create_function_ctxt"
-
+  match p with
+  | [] -> tc
+  | Gvdecl ({elt=g} as l) :: rest ->
+    let tc_rest = create_global_ctxt tc rest in
+    let g_ty = typecheck_exp tc_rest g.init in
+    typecheck_ty l tc_rest g_ty;
+    Tctxt.add_global tc_rest g.name g_ty
+  | _ :: rest -> create_global_ctxt tc rest
 
 (* This function implements the |- prog and the H ; G |- prog 
    rules of the oat.pdf specification.   
