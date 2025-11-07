@@ -28,7 +28,7 @@ jobs:
       - name: Report number of checks passed
         run: |
           res=$(./oatc --test 2>/dev/null | grep 'Passed:')
-          echo "$res" | grep -P 'Passed: (\d+)/\1' >/dev/null && state="success" || state="failure"
+          echo "$res" | grep -P 'Passed: (\d+)/\1$' >/dev/null && state="success" || state="failure"
           curl -sS -X POST \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
