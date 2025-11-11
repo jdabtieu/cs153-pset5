@@ -453,19 +453,30 @@ and cmp_stmt (tc : TypeCtxt.t) (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt
         >:: L le >@ else_code >:: T(Br lm) 
         >:: L lm
 
-  (* CAST TASK: Fill in this case of the compiler to implement the 'if?' checked
-     null downcast statement.  
-       - check whether the value computed by exp is null, if so jump to
-         the 'null' block, otherwise take the 'notnull' block
-
-       - the identifier id is in scope in the 'notnull' block and so 
-         needs to be allocated (and added to the context)
-
-       - as in the if-the-else construct, you should jump to the common
-         merge label after either block
-  *)
   | Ast.Cast (typ, id, exp, notnull, null) ->
-    failwith "todo: implement Ast.Cast case"
+    let guard_ty, guard_op, guard_code = cmp_exp tc c exp in
+    let ll_ty = Ptr (cmp_rty tc typ) in
+    let res_id = gensym id in
+    let c' = Ctxt.add c id (Ptr ll_ty, Id res_id) in
+    let _, notnull_code = cmp_block tc c' rt notnull in
+    let _, null_code = cmp_block tc c rt null in
+    let lnn, ln, lm = gensym "cast_notnull", gensym "cast_null", gensym "cast_merge" in
+    let lc, lt, lt2, lt3, lt4 = gensym "cast_check", gensym "cast_tmp", gensym "cast_tmp", gensym "cast_tmp", gensym "cast_tmp" in
+    c, guard_code 
+       >:: E(lt, Alloca guard_ty)
+       >:: I(lt, Store (guard_ty, guard_op, Id lt))
+       >:: I(lt2, Bitcast (Ptr guard_ty, Id lt, Ptr I64))
+       >:: I(lt3, Load (Ptr I64, Id lt2))
+       >:: I(lc, Icmp (Eq, I64, Id lt3, Ll.Const 0L))
+       >:: T(Cbr (Id lc, ln, lnn))
+       >:: L lnn 
+       >:: I(res_id, Bitcast (Ptr guard_ty, Id lt, Ptr ll_ty))
+       >@ notnull_code 
+       >:: T(Br lm) 
+       >:: L ln 
+       >@ null_code 
+       >:: T(Br lm) 
+       >:: L lm
 
   | Ast.While (guard, body) ->
      let guard_ty, guard_op, guard_code = cmp_exp tc c guard in
