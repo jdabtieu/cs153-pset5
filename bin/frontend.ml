@@ -277,7 +277,7 @@ let rec cmp_exp (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.ope
     let gep_id = gensym "len_gep" in
     let len_id = gensym "len" in
     (I64, Id len_id,
-     I(len_id, Load(I64, Id gep_id)) ::
+     I(len_id, Load(Ptr I64, Id gep_id)) ::
      I(gep_id, Gep(ty, op, [Const 0L; Const 0L])) ::
      stream)
 
