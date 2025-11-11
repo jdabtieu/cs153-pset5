@@ -272,13 +272,14 @@ let rec cmp_exp (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.ope
       | Ast.Bitnot -> Binop (Xor, I64, op, i64_op_of_int (-1)) in
     cmp_ty tc ret_ty, Id ans_id, code >:: I (ans_id, cmp_uop op uop)
 
-
-  (* ARRAY TASK: complete this case to compile the length(e) expression.
-       The emitted code should yield the integer stored as part 
-       of the array struct representation.
-  *)
   | Ast.Length e ->
-    failwith "todo:implement Ast.Length case"
+    let ty, op, stream = cmp_exp tc c e in
+    let gep_id = gensym "len_gep" in
+    let len_id = gensym "len" in
+    (I64, Id len_id,
+     I(len_id, Load(I64, Id gep_id)) ::
+     I(gep_id, Gep(ty, op, [Const 0L; Const 0L])) ::
+     stream)
 
   | Ast.Call (f, es) ->
     cmp_call tc c f es 
@@ -302,20 +303,29 @@ let rec cmp_exp (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.ope
     let arr_ty, arr_op, alloc_code = oat_alloc_array tc elt_ty size_op in
     arr_ty, arr_op, size_code >@ alloc_code
 
-  (* ARRAY TASK: Modify the compilation of the NewArrInit construct to implement the 
-     initializer:
-         - the initializer is a loop that uses id as the index
-         - each iteration of the loop the code evaluates e2 and assigns it
-           to the index stored in id.
-
-     Note: You can either write code to generate the LL loop directly, or
-     you could write the loop using abstract syntax and then call cmp_stmt to
-     compile that into LL code...
-  *)
   | Ast.NewArrInit (elt_ty, e1, id, e2) ->    
     let _, size_op, size_code = cmp_exp tc c e1 in
     let arr_ty, arr_op, alloc_code = oat_alloc_array tc elt_ty size_op in
-    arr_ty, arr_op, size_code >@ alloc_code
+    let array_tmp_id = gensym "array_tmp" in
+    let ctxt_with_array = Ctxt.add c array_tmp_id (Ptr arr_ty, Id array_tmp_id) in
+    let init_ast_stmt =
+      For ([(id, no_loc (CInt 0L))],
+           Some (no_loc (Bop (Lt, no_loc (Lhs (no_loc (Id id))), e1))),
+           Some (no_loc (Assn (no_loc (Id id), no_loc (Bop (Add, no_loc (Lhs (no_loc (Id id))), no_loc (CInt 1L)))))),
+           [
+              no_loc (Assn (
+                no_loc (Index (
+                  no_loc (Lhs (no_loc (Id array_tmp_id))),
+                  no_loc (Lhs (no_loc (Id id)))
+                )),
+                e2
+              ))
+           ]) in
+    let _, init_stream = cmp_stmt tc ctxt_with_array Void (no_loc init_ast_stmt) in
+    arr_ty, arr_op, size_code >@ alloc_code 
+        >:: E(array_tmp_id, Alloca arr_ty)
+        >:: I(gensym "store", Store (arr_ty, arr_op, Id array_tmp_id))
+        >@ init_stream
 
    (* STRUCT TASK: complete this code that compiles struct expressions.
       For each field component of the struct
@@ -379,7 +389,10 @@ and cmp_lhs (tc : TypeCtxt.t) (c:Ctxt.t) (l:lhs node) : Ll.ty * bool * Ll.operan
     let ptr_id, tmp_id, call_id = gensym "index_ptr", gensym "tmp", gensym "call" in
     ans_ty, true, (Id ptr_id),
     arr_code >@ ind_code >@ lift
-      [ptr_id, Gep(arr_ty, arr_op, [i64_op_of_int 0; i64_op_of_int 1; ind_op]) ]
+      [(tmp_id, Bitcast(arr_ty, arr_op, Ptr I64));
+       (call_id, Call(Void, Gid "oat_assert_array_length", [Ptr I64, Id tmp_id; I64, ind_op]));
+       (ptr_id, Gep(arr_ty, arr_op, [i64_op_of_int 0; i64_op_of_int 1; ind_op]));
+      ]
 
 
 and cmp_call (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) (es:Ast.exp node list) : Ll.ty * Ll.operand * stream =
