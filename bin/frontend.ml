@@ -187,16 +187,18 @@ let oat_alloc_array ct (t:Ast.ty) (size:Ll.operand) : Ll.ty * operand * stream =
     ; ans_id, Bitcast(arr_ty, Id arr_id, ans_ty) ]
 
 
-(* STRUCT TASK: Complete this helper function that allocates an oat structure on the 
-   heap and returns a target operand with the appropriate reference.  
-   
-   - generate a call to 'oat_malloc' and use bitcast to convert the
-     resulting pointer to the right type
-
-   - make sure to calculate the correct amount of space to allocate!
+(* Allocates an oat structure on the 
+   heap and returns a target operand with the appropriate reference.
 *)
 let oat_alloc_struct (ct:TypeCtxt.t) (id:Ast.id) : Ll.ty * operand * stream =
-  failwith "TODO: oat_alloc_struct"
+  let ans_id, struct_id = gensym "struct", gensym "raw_struct" in
+  let ans_ty = cmp_ty ct @@ TRef (RStruct id) in
+  let size = match TypeCtxt.lookup id ct with
+  | hd::tl -> List.fold_left (fun acc t -> Int64.add acc (size_oat_ty t.ftyp)) 0L (hd::tl)
+  | _ -> failwith "oat_alloc_struct: not a struct type" in
+  ans_ty, Id ans_id, lift
+    [ struct_id, Call(Ptr I64, Gid "oat_malloc", [I64, Ll.Const size])
+    ; ans_id, Bitcast(Ptr I64, Id struct_id, ans_ty) ]
 
 
 let str_arr_ty s = Array(1 + String.length s, I8)
@@ -327,14 +329,19 @@ let rec cmp_exp (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.ope
         >:: I(gensym "store", Store (arr_ty, arr_op, Id array_tmp_id))
         >@ init_stream
 
-   (* STRUCT TASK: complete this code that compiles struct expressions.
-      For each field component of the struct
-       - use the TypeCtxt operations to compute getelementptr indices
-       - compile the initializer expression
-       - store the resulting value into the structure
-   *)
   | Ast.CStruct (id, l) ->
-    failwith "TODO: Ast.CStruct"
+      let struct_ty, struct_op, alloc_stream = oat_alloc_struct tc id in
+      let add_field s (f_name, f_exp) =
+        let ty, _ = TypeCtxt.lookup_field_name id f_name tc in
+        let f_op, f_stream = cmp_exp_as tc c f_exp (cmp_ty tc ty) in
+        let gep_id = gensym "field_gep" in
+        let idx = TypeCtxt.index_of_field id f_name tc in
+        s >@ f_stream >@ lift
+          [ gep_id, Gep(struct_ty, struct_op, [Const 0L; Const (Int64.of_int idx)])
+          ; gensym "store", Store((cmp_ty tc ty), f_op, Id gep_id) ]
+      in
+      let field_code = List.fold_left add_field [] l in
+      struct_ty, struct_op, alloc_stream >@ field_code
 
   | Ast.Lhs l ->
      let ans_ty, assignable, ptr_op, code = cmp_lhs tc c l in
@@ -363,23 +370,19 @@ and cmp_lhs (tc : TypeCtxt.t) (c:Ctxt.t) (l:lhs node) : Ll.ty * bool * Ll.operan
     | _ -> failwith "Unexpected variable type" 
     end
 
-  (* STRUCT TASK: Complete this code that emits LL code to compute the
-     address of the i'th field from a value of struct type.  Note that
-     the actual load from the address to project the value is handled by the
-     Ast.Lhs case of the cmp_exp function (above).
-
-     You will find the TypeCtxt.lookup_field_name function helpful.
-  *)
   | Ast.Proj (e, i) ->
-    failwith "todo: Ast.Proj case of cmp_exp_lhs"
+    let struct_ty, struct_op, struct_code = cmp_exp tc c e in
+    let field_ty, field_idx = TypeCtxt.lookup_field_name
+      (match struct_ty with
+      | Ptr (Namedt id) -> id
+      | _ -> failwith "Proj: not a struct pointer"
+      ) i tc in
+    let gep_id = gensym "proj_gep" in
+    cmp_ty tc field_ty, true, Id gep_id,
+    struct_code >@ lift
+      [ gep_id, Gep(struct_ty, struct_op, [Const 0L; Const field_idx]) ]
 
 
-  (* ARRAY TASK: Modify this index code to call 'oat_assert_array_length' before doing the 
-     GEP calculation. This should be very straightforward, except that you'll need to use a Bitcast.
-     You might want to take a look at the implementation of 'oat_assert_array_length'
-     in runtime.c.   (That check is where the infamous "ArrayIndexOutOfBounds" exception would 
-     be thrown...)
-  *)
   | Ast.Index (e, i) ->
     let arr_ty, arr_op, arr_code = cmp_exp tc c e in
     let _, ind_op, ind_code = cmp_exp tc c i in
@@ -624,9 +627,19 @@ let rec cmp_gexp c (tc : TypeCtxt.t) (e:Ast.exp node) : Ll.gdecl * (Ll.gid * Ll.
     let cast = GBitcast (Ptr arr_t, GGid gid, Ptr final_t) in
     (Ptr final_t, cast), (gid, (arr_t, arr_i))::gs
 
-  (* STRUCT TASK: Complete this code that generates the global initializers for a struct value. *)  
   | CStruct (id, cs) ->
-    failwith "todo: Cstruct case of cmp_gexp"
+    let fields, gs = List.fold_right
+        (fun (f_name, f_exp) (fields, gs) ->
+           let gd, gs' = cmp_gexp c tc f_exp in
+           let ty, _ = TypeCtxt.lookup_field_name id f_name tc in
+           (cmp_ty tc ty, gd)::fields, gs' @ gs) cs ([], [])
+    in
+    let gid = gensym "global_struct" in
+    let struct_t = Struct (List.map fst fields) in
+    let struct_i = GStruct (List.map snd fields) in
+    let final_t = Ptr (Namedt id) in
+    let cast = GBitcast (Ptr struct_t, GGid gid, final_t) in
+    (final_t, cast), (gid, (struct_t, struct_i))::gs
 
   | _ -> failwith "bad global initializer"
 
