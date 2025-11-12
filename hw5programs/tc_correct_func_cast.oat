@@ -1,0 +1,17 @@
+struct A {
+  int a
+}
+
+struct B {
+  int a;
+  int b
+}
+
+int add(int arg1, A arg2) {
+  return arg1 + arg2.a;
+}
+
+int program(int argc, string[] argv) {
+  var sb = new B{b = 1; a = 2};
+  return add(10, sb);
+}

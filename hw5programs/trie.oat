@@ -1,0 +1,70 @@
+struct TrieNode {
+    TrieNode?[] next;
+    bool is_hit
+}
+
+struct RootTrieNode {
+    TrieNode?[] next;
+    bool is_hit;
+    int query_cnt
+}
+
+void dictInsert(TrieNode root, string s) {
+    var chars = array_of_string(s);
+    for (var i = 0; i < length(chars); i = i + 1;) {
+        if? (TrieNode next = root.next[chars[i]]) {}
+        else {
+            root.next[chars[i]] = new TrieNode{next = new TrieNode?[128]{x -> TrieNode null}; is_hit = false};
+        }
+        if? (TrieNode next = root.next[chars[i]]) {
+            root = next;
+        } else {
+            print_string("Illegal State Reached\n");
+        }
+    }
+    root.is_hit = true;
+    return;
+}
+
+bool dictQuery(TrieNode root, string s) {
+    var chars = array_of_string(s);
+    for (var i = 0; i < length(chars); i = i + 1;) {
+        if? (TrieNode next = root.next[chars[i]]) {
+            root = next;
+        } else {
+            return false;
+        }
+    }
+    return root.is_hit;
+}
+
+void checkQuery(RootTrieNode root, string s, bool expected_answer) {
+    root.query_cnt = root.query_cnt + 1;
+    if (dictQuery(root, s) != expected_answer) {
+        print_string("Wrong Answer on query ");
+        print_int(root.query_cnt);
+        print_string("\n");
+    }
+    return;
+}
+
+int program (int argc, string[] argv) {
+    var root = new RootTrieNode{next = new TrieNode?[128]{x -> TrieNode null}; is_hit = false; query_cnt = 0};
+    checkQuery(root, "google", false);
+    dictInsert(root, "google");
+    checkQuery(root, "google", true);
+    dictInsert(root, "google");
+    checkQuery(root, "google", true);
+    checkQuery(root, "googl", false);
+    checkQuery(root, "googled", false);
+    dictInsert(root, "goofy");
+    dictInsert(root, "cs153");
+    dictInsert(root, "cs1530");
+    checkQuery(root, "goofy", true);
+    checkQuery(root, "goo", false);
+    checkQuery(root, "cs153", true);
+    checkQuery(root, "cs1530", true);
+    checkQuery(root, "cs1531", false);
+    checkQuery(root, "cs1531", true); /* we SHOULD see a wrong answer here */
+    return 0;
+}
