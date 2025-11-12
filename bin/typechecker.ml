@@ -62,7 +62,14 @@ and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
   | (RArray t1_elem, RArray t2_elem) -> t1_elem = t2_elem
   | (RStruct s1, RStruct s2) -> (
     match Tctxt.lookup_struct_option s1 c, Tctxt.lookup_struct_option s2 c with
-    | Some fields1, Some fields2 -> List.for_all (fun f -> List.mem f fields1) fields2
+    | Some fields1, Some fields2 ->
+      let rec aux l1 l2 : bool =
+        match (l1, l2) with
+        | (hd1::tl1, hd2::tl2) -> hd1 = hd2 && aux tl1 tl2
+        | (_, []) -> true
+        | ([], _) -> false
+      in
+      aux fields1 fields2
     | _ -> false
   )
   | (RFun (args1, rt1), RFun (args2, rt2)) ->
