@@ -18,6 +18,7 @@ let student_local_tests : suite = [
     executed_oat_file [
       ("hw4programs/nqueens.oat", " ", "10000000\n00000010\n00001000\n00000001\n01000000\n00010000\n00000100\n001000000");
       ("hw5programs/trie.oat", "", "Wrong Answer on query 110");
+      ("hw5programs/mediantwosortedarrays.oat", "5 3 1 2 3 4 5", "BST approach: 30");
     ]
   );
   Test("personal unittests", executed_oat_file [
@@ -27,9 +28,11 @@ let student_local_tests : suite = [
   Test("Positive Ed tests", typecheck_file_correct [
     "hw5programs/tc_struct_ok.oat";
     "hw5programs/tc_correct_func_cast.oat";
+    "hw5programs/josh_subtyping2(PC).oat";
   ]);
   Test("Negative Ed tests", typecheck_file_error [
     "hw5programs/tc_recursive_struct_err.oat";
     "hw5programs/tc_error_func_cast.oat";
+    "hw5programs/josh_subtyping1.oat";
   ]);
 ]

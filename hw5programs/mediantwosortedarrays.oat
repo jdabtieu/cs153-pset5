@@ -1,0 +1,144 @@
+/*
+    OatV2 version of mediantwosortedarrays that I used for HW4. Used AI to debug and convert it
+*/
+
+/* TreeNode struct - demonstrates nullable self-references */
+struct TreeNode {
+    int value;
+    TreeNode? left;
+    TreeNode? right
+}
+
+/* Comparator struct - holds a comparison function pointer */
+struct Comparator {
+    (int, int) -> bool lessThan
+}
+
+/* Helper: string to int conversion */
+int stoi(string s) {
+    var len = length_of_string(s);
+    var str = array_of_string(s);
+    var x = 0;
+    for (var i = 0; i < len; i = i + 1;) {
+        x = x * 10 + str[i] - 48;
+    }
+    return x;
+}
+
+/* Standard comparison function */
+bool standardLessThan(int a, int b) {
+    return a < b;
+}
+
+/* Create a new tree node (non-null) */
+TreeNode newNode(int val) {
+    return new TreeNode {value = val; left = TreeNode null; right = TreeNode null};
+}
+
+/* Insert into BST using a comparator (demonstrates function pointers & nullable refs) */
+TreeNode? insertWithComparator(TreeNode? root, int val, Comparator cmp) {
+    if? (TreeNode node = root) {
+        /* Non-null case: navigate tree using comparator */
+        if (cmp.lessThan(val, node.value)) {
+            node.left = insertWithComparator(node.left, val, cmp);
+        } else {
+            node.right = insertWithComparator(node.right, val, cmp);
+        }
+        return node;
+    } else {
+        /* Null case: create new node */
+        return newNode(val);
+    }
+}
+
+/* In-order traversal to collect values into array */
+int inorderCollect(TreeNode? root, int[] result, int index) {
+    if? (TreeNode node = root) {
+        /* Visit left subtree */
+        var newIndex = inorderCollect(node.left, result, index);
+        
+        /* Visit current node */
+        result[newIndex] = node.value;
+        newIndex = newIndex + 1;
+        
+        /* Visit right subtree */
+        newIndex = inorderCollect(node.right, result, newIndex);
+        
+        return newIndex;
+    } else {
+        return index;
+    }
+}
+
+/* Count nodes in tree */
+int countNodes(TreeNode? root) {
+    if? (TreeNode node = root) {
+        var leftCount = countNodes(node.left);
+        var rightCount = countNodes(node.right);
+        return 1 + leftCount + rightCount;
+    } else {
+        return 0;
+    }
+}
+
+/* Find median using BST approach with function pointers */
+int findMedianViaBST(int[] nums1, int m, int[] nums2, int n, Comparator cmp) {
+    /* Build BST from both arrays */
+    var root = TreeNode null;
+    
+    for (var i = 0; i < m; i = i + 1;) {
+        root = insertWithComparator(root, nums1[i], cmp);
+    }
+    
+    for (var i = 0; i < n; i = i + 1;) {
+        root = insertWithComparator(root, nums2[i], cmp);
+    }
+    
+    /* Collect sorted values via in-order traversal */
+    var total = m + n;
+    var sorted = new int[total];
+    var unused = inorderCollect(root, sorted, 0);
+    
+    /* Find median */
+    var mid = total >> 1;
+    if (((total >> 1) << 1) == total) {
+        /* Even: average of two middle elements */
+        return (sorted[mid - 1] + sorted[mid]) >> 1;
+    } else {
+        /* Odd: middle element */
+        return sorted[mid];
+    }
+}
+
+int program(int argc, string[] argv) {
+    if (argc < 4) {
+        print_string("Usage: program total_len m_len array1_elements array2_elements\n");
+        return 1;
+    }
+    
+    /* Parse command line: total m elem1 elem2 ... */
+    var totalLen = stoi(argv[1]);
+    var m = stoi(argv[2]);
+    var n = totalLen - m;
+    
+    var nums1 = new int[m];
+    var nums2 = new int[n];
+    
+    for (var i = 0; i < m; i = i + 1;) {
+        nums1[i] = stoi(argv[3 + i]);
+    }
+    
+    for (var i = 0; i < n; i = i + 1;) {
+        nums2[i] = stoi(argv[3 + m + i]);
+    }
+    
+    /* Create comparator with function pointer */
+    var cmp = new Comparator {lessThan = standardLessThan};
+    
+    print_string("BST approach: ");
+    var medianBST = findMedianViaBST(nums1, m, nums2, n, cmp);
+    print_int(medianBST);
+    print_string("\n");
+    
+    return 0;
+}
